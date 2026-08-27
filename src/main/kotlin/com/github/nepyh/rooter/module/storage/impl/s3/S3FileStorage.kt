@@ -11,13 +11,11 @@ import aws.sdk.kotlin.services.s3.presigners.presignGetObject
 import aws.smithy.kotlin.runtime.content.asByteStream
 import aws.smithy.kotlin.runtime.content.toInputStream as byteStreamToInputStream
 import com.github.nepyh.rooter.module.storage.FileStorage
-import io.ktor.http.Headers
-import io.ktor.http.HttpHeaders
-import io.ktor.http.content.PartData
-import io.ktor.utils.io.jvm.javaio.toByteReadChannel
+import com.github.nepyh.rooter.module.storage.UploadableFile
 import io.ktor.utils.io.jvm.javaio.toInputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.InputStream
 import java.util.UUID
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
@@ -32,26 +30,26 @@ class S3FileStorage(
         this.region = region
     }
 
-    override suspend fun upload(file: PartData.FileItem, directory: String): String =
+    override suspend fun upload(file: UploadableFile, directory: String): String =
         withContext(Dispatchers.IO) {
-            val originalName = file.originalFileName ?: "unknown_file"
-            val fileExtension = originalName.substringAfterLast('.', "")
-            val uniqueFileName = if (fileExtension.isNotEmpty()) {
-                "${UUID.randomUUID()}.$fileExtension"
-            } else {
-                UUID.randomUUID().toString()
+            val extension = file.originalFileName
+                ?.substringAfterLast('.', "")
+                ?.takeIf { it.isNotEmpty() }
+
+            val key = buildString {
+                append(directory.trim('/'))
+                append('/')
+                append(UUID.randomUUID())
+                extension?.let { append('.'); append(it) }
             }
-            val key = if (directory.isEmpty()) uniqueFileName else "$directory/$uniqueFileName"
 
-            val contentLength = file.headers[HttpHeaders.ContentLength]?.toLongOrNull()
-
-            file.provider().toInputStream().use { inputStream ->
+            file.content.toInputStream().use { inputStream ->
                 s3.putObject(
                     PutObjectRequest {
                         bucket = this@S3FileStorage.bucket
                         this.key = key
-                        body = inputStream.asByteStream(contentLength)
-                        contentType = file.headers[HttpHeaders.ContentType]
+                        body = inputStream.asByteStream(file.contentLength)
+                        contentType = file.contentType
                     }
                 )
             }
@@ -59,33 +57,25 @@ class S3FileStorage(
             key
         }
 
-    override suspend fun getFile(fileKey: String): PartData.FileItem? =
-        withContext(Dispatchers.IO) {
-            try {
-                s3.getObject(
-                    GetObjectRequest {
-                        bucket = this@S3FileStorage.bucket
-                        key = fileKey
-                    }
-                ) { response ->
-                    val body = response.body
-                    if (body == null) {
-                        null
-                    } else {
-                        PartData.FileItem(
-                            provider = { body.byteStreamToInputStream().toByteReadChannel() },
-                            dispose = {},
-                            partHeaders = Headers.build {
-                                response.contentType?.let { append(HttpHeaders.ContentType, it) }
-                                response.contentLength?.let { append(HttpHeaders.ContentLength, it.toString()) }
-                            }
-                        )
-                    }
+    override suspend fun <T> readFile(
+        fileKey: String,
+        block: suspend (stream: InputStream, contentType: String?, contentLength: Long?) -> T,
+    ): T? = withContext(Dispatchers.IO) {
+        try {
+            s3.getObject(
+                GetObjectRequest {
+                    bucket = this@S3FileStorage.bucket
+                    key = fileKey
                 }
-            } catch (_: NoSuchKey) {
-                null
+            ) { response ->
+                response.body?.byteStreamToInputStream()?.use { stream ->
+                    block(stream, response.contentType, response.contentLength)
+                }
             }
+        } catch (_: NoSuchKey) {
+            null
         }
+    }
 
     override suspend fun getUrl(fileKey: String): String? =
         withContext(Dispatchers.IO) {
