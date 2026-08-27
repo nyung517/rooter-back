@@ -14,9 +14,35 @@ services:
       - JWT_SECRET=${JWT_SECRET}
       - JWT_ISSUER=${JWT_ISSUER}
       - NICE_API_KEY=${NICE_API_KEY}
+      # IAM Roles Anywhere helper 가 뜨는 경우에만 S3 인증에 사용됨 (없으면 무해)
+      - AWS_EC2_METADATA_SERVICE_ENDPOINT=http://roles-anywhere-helper:9911
     depends_on:
       db:
         condition: service_healthy
+    networks:
+      - app-network
+
+  roles-anywhere-helper:
+    image: public.ecr.aws/rolesanywhere/credential-helper:latest
+    profiles: ["roles-anywhere"]   # 이 프로필을 켤 때만 실행됨
+    command: >
+      serve
+      --certificate /certs/client-cert.pem
+      --private-key /certs/client-key.pem
+      --trust-anchor-arn ${ROLESANYWHERE_TRUST_ANCHOR_ARN}
+      --profile-arn ${ROLESANYWHERE_PROFILE_ARN}
+      --role-arn ${ROLESANYWHERE_ROLE_ARN}
+      --port 9911
+    volumes:
+      - ./certs:/certs:ro
+    ports:
+      - "127.0.0.1:9911:9911"   # 로컬호스트에만 바인딩 (외부 노출 금지)
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9911/latest/meta-data/iam/security-credentials/"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
     networks:
       - app-network
 
