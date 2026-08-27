@@ -1,11 +1,12 @@
 package com.github.nepyh.rooter.module.storage.impl.local
 
 import com.github.nepyh.rooter.module.storage.FileStorage
-import com.github.nepyh.rooter.module.storage.UploadableFile
-import io.ktor.utils.io.jvm.javaio.*
+import io.ktor.http.*
+import io.ktor.http.content.*
+import io.ktor.util.cio.*
+import io.ktor.utils.io.*
 import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.withContext
-import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.*
@@ -22,7 +23,7 @@ class LocalFileStorageImpl(
         }
     }
 
-    override suspend fun upload(file: UploadableFile, directory: String): String =
+    override suspend fun upload(file: PartData.FileItem, directory: String): String =
         withContext(IO) {
             val targetDir = baseDir.resolve(directory)
             if (!Files.exists(targetDir)) {
@@ -39,26 +40,34 @@ class LocalFileStorageImpl(
 
             val targetFile = targetDir.resolve(uniqueFileName).toFile()
 
-            file.content.toInputStream().use { inputStream ->
-                targetFile.outputStream().use { outputStream ->
-                    inputStream.copyTo(outputStream)
+            val writeChannel = targetFile.writeChannel()
+            val readChannel = file.provider()
+
+            readChannel.copyTo(writeChannel)
+
+            return@withContext if (directory.isEmpty()) uniqueFileName else "$directory/$uniqueFileName"
+        }
+
+    override suspend fun getFile(fileKey: String): PartData.FileItem? =
+        withContext(IO) {
+            val file = baseDir.resolve(fileKey).toFile()
+            if (!file.exists() || !file.isFile) return@withContext null
+
+            PartData.FileItem(
+                provider = { file.readChannel() },
+                dispose = {},
+                partHeaders = Headers.build {
+                    append(
+                        HttpHeaders.ContentDisposition,
+                        "attachment; filename=\"${file.name}\""
+                    )
+                    append(
+                        HttpHeaders.ContentLength,
+                        file.length().toString()
+                    )
                 }
-            }
-
-            if (directory.isEmpty()) uniqueFileName else "$directory/$uniqueFileName"
+            )
         }
-
-    override suspend fun <T> readFile(
-        fileKey: String,
-        block: suspend (stream: InputStream, contentType: String?, contentLength: Long?) -> T,
-    ): T? = withContext(IO) {
-        val file = baseDir.resolve(fileKey).toFile()
-        if (!file.exists() || !file.isFile) return@withContext null
-
-        file.inputStream().use { stream ->
-            block.invoke(stream, null, file.length())
-        }
-    }
 
     override suspend fun getUrl(fileKey: String): String? {
         val file = baseDir.resolve(fileKey).toFile()

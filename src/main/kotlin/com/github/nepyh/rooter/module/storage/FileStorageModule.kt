@@ -2,39 +2,40 @@ package com.github.nepyh.rooter.module.storage
 
 import com.github.nepyh.rooter.common.ApiRoute
 import com.github.nepyh.rooter.common.config.AppConfig
-import com.github.nepyh.rooter.common.config.StorageConfig
 import com.github.nepyh.rooter.module.storage.impl.local.LocalFileStorageApi
 import com.github.nepyh.rooter.module.storage.impl.local.LocalFileStorageImpl
-import com.github.nepyh.rooter.module.storage.impl.s3.S3FileStorage
 import org.koin.dsl.module
 import java.nio.file.Paths
 
 
+enum class FileStorageType {
+    LOCAL,
+    ;
+}
+
 fun FileStorageModule(appConfig: AppConfig) = module {
-    val storageConfig = appConfig.storageConfig
+    val storageType = try {
+        FileStorageType.valueOf(appConfig.storageType.uppercase())
+    } catch (e: IllegalArgumentException) {
+        throw IllegalArgumentException("Storage type name \"${appConfig.storageType}\" does not exist", e)
+    }
 
     single<FileStorage> {
-        when (storageConfig) {
-            is StorageConfig.LocalFileStorageConfig -> {
+        when (storageType) {
+            FileStorageType.LOCAL -> {
                 LocalFileStorageImpl(
-                    baseDir = Paths.get(storageConfig.baseDir),
-                    baseUrl = storageConfig.baseUrl
-                )
-            }
-            is StorageConfig.S3FileStorageConfig -> {
-                S3FileStorage(
-                    region = storageConfig.region,
-                    bucket = storageConfig.bucket
+                    baseDir = Paths.get(appConfig.storageBaseDir!!),
+                    baseUrl = appConfig.storageBaseUrl!!
                 )
             }
         }
     }
 
-    if (storageConfig is StorageConfig.LocalFileStorageConfig) {
+    if (storageType ==  FileStorageType.LOCAL) {
         single<ApiRoute> {
             LocalFileStorageApi(
-                baseDir = Paths.get(storageConfig.baseDir),
-                baseRoute = storageConfig.baseUrl.trim('/')
+                baseDir = Paths.get(appConfig.storageBaseDir!!),
+                baseRoute = appConfig.storageBaseRoute!!.trim('/')
             )
         }
     }
